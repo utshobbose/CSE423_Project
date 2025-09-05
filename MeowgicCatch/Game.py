@@ -650,3 +650,375 @@ class FishField:
                 ux, uy = dx / d, dy / d
                 f.x += ux * step; f.y += uy * step
 
+class Dog:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+        self.z = 25.0
+        self.stunned_until = 0.0
+        self.steal_ready_at = time.time() + random.uniform(*DOG_STEAL_INTERVAL_S)
+    def stunned(self) -> bool: return time.time() < self.stunned_until
+    def update(self, dt, target_xy):
+        if self.stunned(): return
+        tx, ty = target_xy
+        dx, dy = tx - self.x, ty - self.y
+        d = math.hypot(dx, dy) + 1e-6
+        step = DOG_SPEED * dt
+        self.x += (dx / d) * step; self.y += (dy / d) * step
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(self.x, self.y, self.z)
+        glColor3f(0.45, 0.55, 0.95) if self.stunned() else glColor3f(*DOG_COLOR)
+        draw_sphere(DOG_RADIUS * 1.2, 16, 16)
+        glPushMatrix()
+        glTranslatef(DOG_RADIUS * 1.4, 0.0, DOG_RADIUS * 0.4)
+        draw_sphere(DOG_RADIUS * 0.8, 16, 16)
+        glPushMatrix()
+        glTranslatef(DOG_RADIUS * 0.3, DOG_RADIUS * 0.45, DOG_RADIUS * 0.7)
+        glRotatef(-90, 1, 0, 0);
+        draw_cone(DOG_RADIUS * 0.35, DOG_RADIUS * 0.9, 10, 2)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(DOG_RADIUS * 0.3, -DOG_RADIUS * 0.45, DOG_RADIUS * 0.7)
+        glRotatef(-90, 1, 0, 0);
+        draw_cone(DOG_RADIUS * 0.35, DOG_RADIUS * 0.9, 10, 2)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(DOG_RADIUS * 0.95, 0.0, DOG_RADIUS * 0.2)
+        glRotatef(90, 0, 1, 0); glColor3f(0.05, 0.05, 0.05)
+        draw_cone(DOG_RADIUS * 0.25, DOG_RADIUS * 0.6, 10, 2)
+        glPopMatrix()
+        glPopMatrix()
+        glColor3f(DOG_COLOR[0] * 0.9, DOG_COLOR[1] * 0.9, DOG_COLOR[2] * 0.9)
+        leg_w = DOG_RADIUS * 0.35; leg_h = DOG_RADIUS * 0.9
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                glPushMatrix()
+                glTranslatef(sx * DOG_RADIUS * 0.7, sy * DOG_RADIUS * 0.7, -DOG_RADIUS * 0.9)
+                glScalef(leg_w, leg_w, leg_h);
+                draw_cube(1.0)
+                glPopMatrix()
+
+        glPushMatrix()
+        glTranslatef(-DOG_RADIUS * 1.0, 0.0, DOG_RADIUS * 0.5)
+        glRotatef(35, 0, 1, 0); glColor3f(*DOG_COLOR)
+        draw_cylinder(DOG_RADIUS * 0.18, DOG_RADIUS * 0.12, DOG_RADIUS * 1.2, 8, 1)
+        glPopMatrix()
+        glPopMatrix()
+
+
+class DogPack:
+    def __init__(self):
+        self.dogs = []
+
+    def ensure_count(self, n):
+        while len(self.dogs) < n:
+            self.spawn_random()
+
+    def spawn_random(self):
+        half, s = GRID_HALF_CELLS, CELL_SIZE
+        extent = (2 * half + 1) * s * 0.5 - s * 0.5
+        self.dogs.append(Dog(random.uniform(-extent, extent),
+                             random.uniform(-extent, extent)))
+
+    def update(self, dt, target):
+        for d in self.dogs:
+            d.update(dt, target)
+
+    def draw(self):
+        for d in self.dogs:
+            d.draw()
+
+    def separate(self, dt):
+        """Push dogs apart so they don't overlap visually."""
+        min_dist = DOG_RADIUS * 2.5          
+        r2 = min_dist * min_dist
+        push = DOG_SPEED * 0.8 * dt          
+        n = len(self.dogs)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = self.dogs[i], self.dogs[j]
+                dx, dy = b.x - a.x, b.y - a.y
+                d2 = dx * dx + dy * dy
+                if 1e-9 < d2 < r2:
+                    d = math.sqrt(d2)
+                    ux, uy = dx / d, dy / d
+                    a.x -= ux * push; a.y -= uy * push
+                    b.x += ux * push; b.y += uy * push
+
+#  GLOBAL STATE 
+cam = Camera()
+world = World()
+cat = Cat()
+fish_field = FishField()
+dogs = DogPack()
+
+score = 0
+lives = START_LIVES
+cheat_mode = False
+double_score_until = -1e9
+speed_boost_until = -1e9
+last_meow_at = -1e9
+decoy = None  # {"x","y","expires"}
+
+last_damage_time = -1e9
+game_over = False
+
+last_time = None
+fps_accum = 0.0
+fps_frames = 0
+fps_value = 0.0
+
+# NEW: 10× score power-up timer
+score_x10_until = -1e9
+
+#  GAME LOGIC 
+def init_gl():
+    glEnable(GL_DEPTH_TEST)
+    glShadeModel(GL_SMOOTH)
+    glEnable(GL_CULL_FACE); glCullFace(GL_BACK)
+    
+
+def reset_game():
+    global score, lives, decoy, last_meow_at, double_score_until, speed_boost_until
+    global last_damage_time, game_over, score_x10_until
+    score = 0; lives = START_LIVES; game_over = False
+    last_meow_at = -1e9; double_score_until = -1e9; speed_boost_until = -1e9
+    score_x10_until = -1e9
+    last_damage_time = -1e9; decoy = None
+    fish_field.spawn_random()
+    dogs.dogs.clear(); dogs.ensure_count(DOG_COUNT)
+    cat.x = 0.0; cat.y = 0.0; cat.yaw_deg = 0.0
+
+def _meow_ready(): return (time.time() - last_meow_at) >= MEOW_COOLDOWN_S
+
+def do_meow():
+    global last_meow_at
+    if not _meow_ready(): return
+    last_meow_at = time.time()
+    for d in dogs.dogs:
+        dx, dy = d.x - cat.x, d.y - cat.y
+        if dx * dx + dy * dy <= MEOW_RANGE * MEOW_RANGE:
+            d.stunned_until = time.time() + MEOW_STUN_SEC
+
+def drop_decoy():
+    global decoy
+    decoy = {"x": cat.x, "y": cat.y, "expires": time.time() + DECOY_LIFETIME}
+
+def hud_color_for_env(phase, weather):
+    if phase == "AM": r, g, b = (0.0, 1.0, 1.0)
+    elif phase == "PM": r, g, b = (1.0, 0.5, 0.0)
+    elif phase == "EVENING": r, g, b = (1.0, 0.0, 1.0)
+    else: r, g, b = (1.0, 1.0, 1.0)
+    if weather == "fog": r, g, b = (0.9, 0.9, 0.9)
+    elif weather == "rain": r, g, b = (0.0, 0.8, 1.0)
+    return r, g, b
+
+def display():
+    world.apply_clear()
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+    cam.apply()
+    world.draw()
+
+    # Decoy visuals 
+    d = decoy
+    decoy_active = False
+    if d is not None and d.get("expires", 0) > time.time():
+        decoy_active = True
+        pulse = 1.0 + 0.3 * math.sin(time.time() * 10.0)
+        glLineWidth(4.0); glColor3f(0.2, 1.0, 0.2)
+        draw_ring(d["x"], d["y"], 2.0, DOG_RADIUS * 2.5 * pulse)
+        glPushMatrix()
+        glTranslatef(d["x"], d["y"], 2.0)
+        glColor3f(0.3, 1.0, 0.3)
+        draw_sphere(DOG_RADIUS * 1.6, 16, 16)
+        glPopMatrix()
+
+    fish_field.draw()
+    dogs.draw()
+    cat.draw()
+
+    if cheat_mode:
+        draw_wire_sphere(cat.x, cat.y, cat.current_z(), CHEAT_BUBBLE_RADIUS)
+
+    hud_begin(WINDOW_WIDTH, WINDOW_HEIGHT)
+    r, g, b = hud_color_for_env(world.phase, world.weather)
+    hud_text(10, WINDOW_HEIGHT - 20,
+             f"Phase:{world.phase}  Weather:{world.weather}  Score:{score}  Lives:{lives}",
+             r, g, b)
+    cd = max(0.0, MEOW_COOLDOWN_S - (time.time() - last_meow_at))
+    hud_text(10, WINDOW_HEIGHT - 40, f"Meow CD:{cd:.1f}s  Cheat:{'ON' if cheat_mode else 'OFF'}")
+    hud_text(10, WINDOW_HEIGHT - 60,
+             "Move:WASD  Jump:Space  Meow:M  Decoy:T  Restart:R  Zoom:+/-  Yaw:1/2  Pitch:3/4",
+             0.0, 1.0, 0.0)
+    hud_text(10, WINDOW_HEIGHT - 80,
+             f"Cat x={cat.x:.0f} y={cat.y:.0f} yaw:{cat.yaw_deg:.0f}°  FPS:{fps_value:.1f}")
+    hud_text(10, WINDOW_HEIGHT - 100, f"Fish left: {fish_field.remaining()}")
+    if decoy_active:
+        hud_text(WINDOW_WIDTH // 2 - 60, WINDOW_HEIGHT // 2 + 40, "DECOY ACTIVE")
+    if game_over:
+        hud_text(WINDOW_WIDTH * 0.5 - 60, WINDOW_HEIGHT * 0.5 + 10, "GAME OVER", 1.0, 0.0, 0.0)
+        hud_text(WINDOW_WIDTH * 0.5 - 120, WINDOW_HEIGHT * 0.5 - 10, "Press R to restart", 1.0, 0.2, 0.2)
+    hud_end()
+    glutSwapBuffers()
+
+def draw_ring(cx, cy, cz, r, segments=48):
+    glBegin(GL_LINE_LOOP)
+    for i in range(segments):
+        th = 2.0 * math.pi * (i / segments)
+        glVertex3f(cx + r * math.cos(th), cy + r * math.sin(th), cz)
+    glEnd()
+
+def activate_double_score():
+    global double_score_until
+    double_score_until = time.time() + POWERUP_TIME_S
+
+def activate_speed_boost():
+    global speed_boost_until
+    speed_boost_until = time.time() + POWERUP_TIME_S
+
+# NEW: activate 10× scoring 
+def activate_score_x10():
+    global score_x10_until
+    score_x10_until = time.time() + POWERUP_TIME_S
+    print("Score x10 activated!")
+
+def update_timer():
+    global last_time, fps_accum, fps_frames, fps_value
+    global score, lives, cheat_mode, decoy, game_over, last_damage_time, double_score_until, speed_boost_until
+    global score_x10_until
+
+    now = time.time()
+    if last_time is None: last_time = now
+    dt = min(0.1, max(0.0, now - last_time))
+    last_time = now
+
+    if game_over:
+        glutPostRedisplay()
+        return
+
+    cat.step_mult = POWERUP_SPEED_MULT if now < speed_boost_until else 1.0
+
+    
+    mult = 10 if now < score_x10_until else (2 if now < double_score_until else 1)
+
+    world.update(dt)
+    cat.update(dt)
+    fish_field.update(dt)
+
+    target = (decoy["x"], decoy["y"]) if (decoy and decoy["expires"] > now) else (cat.x, cat.y)
+    dogs.ensure_count(DOG_COUNT)
+    dogs.update(dt, target)
+    if hasattr(dogs, "separate"): dogs.separate(dt)
+
+    for d in dogs.dogs:
+        if now >= d.steal_ready_at:
+            _ = fish_field.collect_if_close(d.x, d.y, FISH_PICKUP_RADIUS * DOG_STEAL_RADIUS_MULT)
+            d.steal_ready_at = now + random.uniform(*DOG_STEAL_INTERVAL_S)
+        if cat.jump_t >= 0.0:  
+            continue
+        if abs(cat.current_z() - d.z) > COLLISION_HEIGHT_TOL:
+            continue
+        if ((d.x - cat.x) ** 2 + (d.y - cat.y) ** 2) <= (DOG_RADIUS + CAT_BODY_R * 0.6) ** 2:
+            if (now - last_damage_time) >= HIT_IFRAMES_SEC and lives > 0:
+                lives -= 1; last_damage_time = now
+
+    if decoy and decoy["expires"] <= now:
+        decoy = None
+
+    pickup_r = FISH_PICKUP_RADIUS * (1.8 if cat.jump_t >= 0.0 else 1.0)
+    kinds = fish_field.collect_and_report(cat.x, cat.y, pickup_r)
+
+    
+    if kinds["gold"] > 0:
+        for _ in range(kinds["gold"]):
+            activate_score_x10()
+
+    score += mult * (
+        kinds["normal"] * SCORE_NORMAL
+        + kinds["fast"]   * SCORE_FAST
+        + kinds["timed"]  * SCORE_TIMED
+        + kinds["gold"]   * SCORE_GOLD
+    )
+
+    if cheat_mode:
+        fish_field.magnet_pull(cat.x, cat.y, CHEAT_BUBBLE_RADIUS, CHEAT_MAGNET_SPEED, dt)
+
+    if fish_field.remaining() == 0: fish_field.spawn_random()
+
+    fps_accum += dt; fps_frames += 1
+    if fps_accum >= 0.5:
+        fps_value = fps_frames / fps_accum
+        fps_accum = 0.0; fps_frames = 0
+
+    if lives <= 0: game_over = True
+
+    glutPostRedisplay()
+
+
+
+def on_keyboard(key, x, y):
+    global cheat_mode, game_over
+    k = key.decode("utf-8") if isinstance(key, (bytes, bytearray)) else key
+
+    
+    if game_over and k not in ('r', 'R', '\x1b'): return
+
+    
+    if k == '\x1b':  
+        sys.exit(0)  
+
+   
+    elif k == '+':
+        cam.distance = max(100.0, cam.distance - 30.0)
+    elif k == '-':
+        cam.distance = min(2000.0, cam.distance + 30.0)
+    elif k == '1':
+        cam.yaw_deg -= 5.0
+    elif k == '2':
+        cam.yaw_deg += 5.0
+    elif k == '3':
+        cam.pitch_deg = max(10.0, cam.pitch_deg - 3.0)
+    elif k == '4':
+        cam.pitch_deg = min(85.0, cam.pitch_deg + 3.0)
+
+    # Cat movement controls
+    elif k in ('w', 'W'):
+        cat.move_forward()
+    elif k in ('s', 'S'):
+        cat.move_backward()
+    elif k in ('a', 'A'):
+        cat.rotate_left()
+    elif k in ('d', 'D'):
+        cat.rotate_right()
+
+    # Jump and special actions
+    elif k == ' ':
+        cat.start_jump()
+    elif k in ('c', 'C'):
+        cheat_mode = not cheat_mode  
+    elif k in ('m', 'M'):
+        do_meow()  
+    elif k in ('t', 'T'):
+        drop_decoy()  # Drop a decoy
+    elif k in ('r', 'R'):
+        reset_game()  # Reset the game
+
+
+
+
+
+def main():
+    glutInit(sys.argv)
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH)
+    glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    glutInitWindowPosition(100, 100)
+    glutCreateWindow(WINDOW_TITLE.encode("utf-8"))
+    init_gl(); reset_game()
+    glutDisplayFunc(display)
+    
+    glutKeyboardFunc(on_keyboard)
+    glutIdleFunc(update_timer)   
+    glutMainLoop()
+
+if __name__ == "__main__":
+    main()
