@@ -361,3 +361,292 @@ def hud_text(x, y, text, r=1.0, g=1.0, b=1.0):
     glColor3f(r, g, b)
     glRasterPos2f(x, y)
     for ch in text: glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ord(ch))
+
+
+class World:
+    def __init__(self):
+        self.phase = "AM"
+        self._t = 0.0
+        self.weather = "clear"
+        self._last_roll = time.time()
+        self._rain = [(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(160, 260))
+                      for _ in range(160)]
+
+    def update(self, dt):
+        self._t += dt
+        p = int((self._t // TIME_OF_DAY_DURATION_SEC) % 3)
+        self.phase = ("AM", "PM", "EVE")[p]
+        if time.time() - self._last_roll > 20.0:
+            self._last_roll = time.time()
+            if random.random() < 0.25:
+                self.weather = random.choice(["clear", "fog", "rain"])
+
+    def apply_clear(self):
+        if self.phase == "AM":
+            glClearColor(*COLOR_MORNING_SKY, 1.0)
+        elif self.phase == "PM":
+            glClearColor(*COLOR_AFTERNOON_SKY, 1.0)
+        else:
+            glClearColor(*COLOR_EVENING_SKY, 1.0)
+
+    def _set_fog(self, on):
+        return
+
+    def draw(self):
+        half, s = GRID_HALF_CELLS, CELL_SIZE
+        base = {"AM": COLOR_MORNING_FLOOR, "PM": COLOR_AFTERNOON_FLOOR, "EVE": COLOR_EVENING_FLOOR}[self.phase]
+
+        glBegin(GL_QUADS)
+        for ix in range(-half, half + 1):
+            for iy in range(-half, half + 1):
+                x0 = ix * s; y0 = iy * s; x1 = x0 + s; y1 = y0 + s
+                odd = (ix + iy) & 1
+                c = (base[0] * (0.95 if odd else 1.05),
+                     base[1] * (0.95 if odd else 1.05),
+                     base[2] * (0.95 if odd else 1.05))
+                glColor3f(*c)
+                glVertex3f(x0, y0, 0); glVertex3f(x1, y0, 0); glVertex3f(x1, y1, 0); glVertex3f(x0, y1, 0)
+        glEnd()
+
+        draw_grid_lines()
+        if SHOW_AXES: draw_axes(200.0)
+
+        self._set_fog(self.weather == "fog")
+        if self.weather == "rain": self._draw_rain(half, s)
+
+    def _draw_rain(self, half, s):
+        size = (2 * half + 1) * s
+        glLineWidth(1.0)
+        glColor3f(0.85, 0.90, 0.95)
+        glBegin(GL_LINES)
+        for i, (rx, ry, rz) in enumerate(self._rain):
+            x = rx * size * 0.5; y = ry * size * 0.5
+            glVertex3f(x, y, rz); glVertex3f(x, y, rz - 14.0)
+            rz -= 12.0
+            if rz < 6.0:
+                rz = random.uniform(160.0, 260.0)
+                rx = random.uniform(-1, 1); ry = random.uniform(-1, 1)
+            self._rain[i] = (rx, ry, rz)
+        glEnd()
+
+class Cat:
+    def __init__(self):
+        self.x = 0.0; self.y = 0.0; self.yaw_deg = 0.0
+        self.base_z = CAT_Z_OFFSET; self.jump_t = -1.0; self.jump_cd = 0.0
+        self.step_mult = 1.0
+        half, s = GRID_HALF_CELLS, CELL_SIZE
+        self.max_extent = (2 * half + 1) * s * 0.5 - s * 0.5
+
+    def rotate_left(self):  self.yaw_deg = (self.yaw_deg + 90.0) % 360.0
+    def rotate_right(self): self.yaw_deg = (self.yaw_deg - 90.0) % 360.0
+    def move_forward(self):
+        step = CELL_SIZE * self.step_mult; yaw = radians(self.yaw_deg)
+        self._try_move(self.x + math.cos(yaw) * step, self.y + math.sin(yaw) * step)
+    def move_backward(self):
+        step = CELL_SIZE * self.step_mult; yaw = radians(self.yaw_deg)
+        self._try_move(self.x - math.cos(yaw) * step, self.y - math.sin(yaw) * step)
+    def start_jump(self):
+        if self.jump_t < 0 and self.jump_cd <= 0: self.jump_t = 0.0
+    def update(self, dt):
+        if self.jump_cd > 0: self.jump_cd = max(0.0, self.jump_cd - dt)
+        if self.jump_t >= 0.0:
+            self.jump_t += dt / max(1e-6, CAT_JUMP_DURATION)
+            if self.jump_t >= 1.0: self.jump_t = -1.0; self.jump_cd = CAT_JUMP_COOLDOWN
+    def current_z(self):
+        if self.jump_t < 0: return self.base_z
+        t = self.jump_t
+        return self.base_z + 4.0 * CAT_JUMP_HEIGHT * t * (1.0 - t)
+    def _try_move(self, nx, ny):
+        nx = max(-self.max_extent, min(self.max_extent, nx))
+        ny = max(-self.max_extent, min(self.max_extent, ny))
+        self.x, self.y = nx, ny
+    def draw(self):
+        glPushMatrix()
+        glTranslatef(self.x, self.y, self.current_z())
+        glRotatef(self.yaw_deg, 0, 0, 1)
+        glColor3f(*CAT_COLOR_BODY);
+        draw_sphere(CAT_BODY_R, 18, 18)
+        glPushMatrix()
+        glTranslatef(CAT_BODY_R + CAT_HEAD_R * 0.9, 0.0, CAT_BODY_R * 0.4)
+        glColor3f(*CAT_COLOR_HEAD);
+        draw_sphere(CAT_HEAD_R, 18, 18)
+        #ears
+        glPushMatrix()
+        glTranslatef(CAT_HEAD_R * 0.3, CAT_HEAD_R * 0.4, CAT_HEAD_R * 0.8)
+        glRotatef(-90, 1, 0, 0);
+        glColor3f(*CAT_COLOR_EAR);
+        draw_cone(CAT_EAR_R, CAT_EAR_H, 10, 2)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(CAT_HEAD_R * 0.3, -CAT_HEAD_R * 0.4, CAT_HEAD_R * 0.8)
+        glRotatef(-90, 1, 0, 0);
+        glColor3f(*CAT_COLOR_EAR);
+        draw_cone(CAT_EAR_R, CAT_EAR_H, 10, 2)
+        glPopMatrix()
+        glPopMatrix()
+        # legs
+        glColor3f(*CAT_COLOR_LEG)
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                glPushMatrix()
+                glTranslatef(sx * CAT_BODY_R * 0.5, sy * CAT_BODY_R * 0.5, -CAT_BODY_R * 0.8)
+                glScalef(CAT_LEG_W, CAT_LEG_W, CAT_LEG_H);
+                draw_cube(1.0)
+                glPopMatrix()
+        # tail
+        glPushMatrix()
+        glTranslatef(-CAT_BODY_R * 0.8, 0.0, CAT_BODY_R * 0.5)
+        glRotatef(30, 0, 1, 0); glColor3f(*CAT_COLOR_TAIL)
+        draw_cylinder(CAT_TAIL_R, CAT_TAIL_R * 0.6, CAT_TAIL_L, 8, 1)
+        glPopMatrix()
+        glPopMatrix()
+
+
+class Fish:
+    def __init__(self, x, y, kind="normal"):
+        self.x, self.y = x, y
+        self.z = FISH_Z
+        self.kind = kind
+        self.alive = True
+        self.tail_angle = 0
+        self.timer = None
+        self.vx = 0.0; self.vy = 0.0
+        self.size = 1.0
+        self.color = (0.20, 0.75, 0.95)
+        if kind == "fast":
+            ang = random.uniform(0, 2 * math.pi)
+            self.vx = math.cos(ang) * FISH_FAST_SPEED
+            self.vy = math.sin(ang) * FISH_FAST_SPEED
+        elif kind == "gold":
+            self.color = (1.0, 0.84, 0.0); self.size = 1.8
+
+        else:
+            self.color = (0.20, 0.75, 0.95); self.size = 1.0
+        self.die_at = time.time() + random.uniform(*FISH_TIMED_TTL_S) if kind == "timed" else 1e12
+
+    def activate_powerup(self):
+        if random.choice([True, False]): print("Fish activated: Speed boost!")
+        else: print("Fish activated: Double score!")
+
+    def update(self, dt, extent):
+        if not self.alive: return
+        if time.time() >= self.die_at and self.kind == "timed":
+            self.alive = False; print(f"Timed fish expired at ({self.x}, {self.y})"); return
+        if self.kind in ("fast", "gold"):
+            self.x += self.vx * dt; self.y += self.vy * dt
+            if self.x < -extent or self.x > extent:
+                self.vx *= -1; self.x = max(-extent, min(extent, self.x))
+            if self.y < -extent or self.y > extent:
+                self.vy *= -1; self.y = max(-extent, min(extent, self.y))
+        if self.kind == "timed" and time.time() > self.die_at:
+            self.alive = False
+
+    def draw(self):
+        if not self.alive: return
+        glPushMatrix()
+        glTranslatef(self.x, self.y, self.z)
+
+        # body
+        body_col = FISH_COLOR_BODY if self.kind != "gold" else FISH_COLOR_GOLD
+        glPushMatrix()
+        glColor3f(*body_col); glScalef(1.6, 1.0, 0.7);
+        draw_sphere(FISH_BODY_R, 24, 18)
+        glPopMatrix()
+
+        # tail
+        tail_col = FISH_COLOR_TAIL if self.kind != "gold" else FISH_COLOR_GOLD
+        glPushMatrix()
+        glDisable(GL_CULL_FACE)
+        glColor3f(*tail_col); glTranslatef(-16.0, 0.0, 0.0); glRotatef(self.tail_angle, 0, 1, 0)
+        glBegin(GL_TRIANGLES)
+        glVertex3f(0.0, 0.0, 0.0); glVertex3f(-15.0, 9.0, 0.0); glVertex3f(-15.0, -9.0, 0.0)
+        glEnd()
+        glEnable(GL_CULL_FACE)
+        glPopMatrix()
+
+
+        glPushMatrix()
+        glDisable(GL_CULL_FACE)
+        glColor3f(*tail_col); glTranslatef(-2.0, 0.0, 7.0)
+        glBegin(GL_TRIANGLES)
+        glVertex3f(0.0, 0.0, 0.0); glVertex3f(10.0, 0.0, 0.0); glVertex3f(5.0, 0.0, 6.0)
+        glEnd()
+        glEnable(GL_CULL_FACE)
+        glPopMatrix()
+
+        # pectorals
+        glPushMatrix()
+        glTranslatef(4.0, 7.0, -1.0); glRotatef(90, 0, 1, 0); glRotatef(30, 1, 0, 0)
+        draw_cone(5.0, 10.0, 12, 1)
+        glPopMatrix()
+        glPushMatrix()
+        glTranslatef(4.0, -7.0, -1.0); glRotatef(90, 0, 1, 0); glRotatef(-30, 1, 0, 0)
+        draw_cone(5.0, 10.0, 12, 1)
+        glPopMatrix()
+
+        def _eye(px, py, pz):
+            glPushMatrix()
+            glTranslatef(px, py, pz)
+            glColor3f(1.0, 1.0, 1.0);
+            draw_sphere(1.5, 12, 10)
+            glTranslatef(0.6, 0.0, 0.0); glColor3f(0.05, 0.05, 0.05);
+            draw_sphere(0.8, 10, 8)
+            glPopMatrix()
+        _eye(10.0, 3.0, 3.0); _eye(10.0, -3.0, 3.0)
+
+        glPopMatrix()
+        self.tail_angle = (self.tail_angle + 5) % 360
+
+class FishField:
+    def __init__(self): self.fishes = []
+    def _rand_kind(self):
+        r = random.random()
+        if r < FISH_PROB_GOLD: return "gold"
+        if r < FISH_PROB_FAST: return "fast"
+        if r < FISH_PROB_TIMED: return "timed"
+        return "normal"
+    def spawn_random(self, n=FISH_COUNT):
+        self.fishes.clear()
+        half, s = GRID_HALF_CELLS, CELL_SIZE
+        extent = (2 * half + 1) * s * 0.5 - s * 0.5
+        for _ in range(n):
+            x = random.uniform(-extent, extent); y = random.uniform(-extent, extent)
+            self.fishes.append(Fish(x, y, self._rand_kind()))
+    def update(self, dt):
+        half, s = GRID_HALF_CELLS, CELL_SIZE
+        extent = (2 * half + 1) * s * 0.5 - s * 0.5
+        for f in self.fishes: f.update(dt, extent)
+    def draw(self):
+        for f in self.fishes: f.draw()
+    def collect_if_close(self, px, py, r):
+        got = 0; r2 = r * r
+        for f in self.fishes:
+            if f.alive:
+                dx, dy = f.x - px, f.y - py
+                if dx * dx + dy * dy <= r2:
+                    f.alive = False; got += 1
+        return got
+    def collect_and_report(self, px, py, r):
+        kinds = {"normal": 0, "fast": 0, "timed": 0, "gold": 0}
+        r2 = r * r
+        for f in self.fishes:
+            if f.alive:
+                dx, dy = f.x - px, f.y - py
+                if dx * dx + dy * dy <= r2:
+                    f.alive = False; kinds[f.kind] += 1
+        return kinds
+    def remaining(self): return sum(1 for f in self.fishes if f.alive)
+    def magnet_pull(self, px, py, radius, pull_speed, dt):
+        r2 = radius * radius
+        for f in self.fishes:
+            if not f.alive: continue
+            dx = px - f.x; dy = py - f.y
+            d2 = dx * dx + dy * dy
+            if 1e-9 < d2 <= r2:
+                d = d2 ** 0.5
+                strength = 1.0 - (d / radius)
+                step = pull_speed * strength * dt
+                if step > d: step = d
+                ux, uy = dx / d, dy / d
+                f.x += ux * step; f.y += uy * step
+
